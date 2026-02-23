@@ -271,16 +271,60 @@ fn apply_spawn_agent_overrides(config: &mut Config, child_depth: i32) {
 
 ## 内置角色
 
-### explorer 角色
+系统提供 4 种内置角色：
+
+### 1. default 角色
+
+默认代理角色，无特殊配置。
+
+### 2. explorer 角色
 
 位置：`codex-rs/core/src/agent/builtins/explorer.toml`
 
+**用途**：快速、权威地回答特定的代码库问题。
+
+**规则**：
+- 不要重复阅读或搜索已覆盖的代码
+- 信任 explorer 结果，无需验证
+- 并行运行 explorers 以提高效率
+- 复用已有的 explorer 处理相关问题
+
+### 3. worker 角色
+
+**用途**：执行生产工作。
+
+**典型任务**：
+- 实现功能的一部分
+- 修复测试或 bug
+- 将大型重构拆分为独立块
+
+**规则**：
+- 明确分配任务的**所有权**（文件/责任）
+- 告知 worker 它们**不是唯一的 agent**，应忽略其他人的编辑
+
+### 4. monitor 角色
+
+位置：`codex-rs/core/src/agent/builtins/monitor.toml`
+
 ```toml
-model = "gpt-5.1-codex-mini"
-model_reasoning_effort = "medium"
+background_terminal_max_timeout = 3600000
+model_reasoning_effort = "low"
 ```
 
-**用途**：轻量级探索任务，使用较小的模型以节省成本。
+**用途**：监控可能需要一定时间的命令。
+
+**适用场景**：
+- 测试
+- 监控长时间运行的进程
+- 显式等待某事
+
+**行为规则**：
+1. 执行或监控指定命令/任务，直到达到终止状态
+2. **禁止**：修改任务、解释/优化任务、执行无关操作
+3. 持续轮询等待，使用指数退避增加超时
+4. 仅在任务完成、失败或收到停止指令时退出
+
+**重要**：当你等待 `monitor` agent 完成时，使用尽可能大的超时值。
 
 ## 事件协议
 
@@ -348,11 +392,21 @@ multi_agent = true
 max_threads = 6    # 最大并发Agent数
 max_depth = 1      # 最大嵌套深度
 
-# 自定义角色映射
+# 自定义角色映射（可选）
 [agents.agent_roles]
-explorer = "explorer"
-worker = "default"
+explorer = { description = "自定义 explorer 描述", config_file = "/path/to/explorer.toml" }
+worker = { description = "自定义 worker 描述" }
+monitor = { description = "自定义 monitor 描述", config_file = "/path/to/monitor.toml" }
 ```
+
+### 角色选择指南
+
+| 角色 | 适用场景 | 模型配置 |
+|------|----------|----------|
+| `default` | 通用任务 | 继承主会话配置 |
+| `explorer` | 代码库探索、快速查询 | 轻量级，快速响应 |
+| `worker` | 实现功能、修复 bug | 继承主会话配置 |
+| `monitor` | 运行测试、监控进程 | 低推理消耗 (`low`)，长超时 |
 
 ## 使用流程图
 
@@ -388,8 +442,9 @@ worker = "default"
 | `codex-rs/core/src/tools/handlers/multi_agents.rs` | 多Agent工具处理器 |
 | `codex-rs/core/src/agent/control.rs` | Agent控制平面 |
 | `codex-rs/core/src/agent/guards.rs` | 线程限制保护 |
-| `codex-rs/core/src/agent/role.rs` | 角色配置系统 |
-| `codex-rs/core/src/agent/builtins/explorer.toml` | Explorer角色定义 |
+| `codex-rs/core/src/agent/role.rs` | 角色配置系统（内置角色定义） |
+| `codex-rs/core/src/agent/builtins/explorer.toml` | Explorer角色配置 |
+| `codex-rs/core/src/agent/builtins/monitor.toml` | Monitor角色配置 |
 | `codex-rs/tui/src/multi_agents.rs` | TUI渲染组件 |
 | `codex-rs/protocol/src/protocol.rs` | 协议事件定义 |
 
@@ -397,6 +452,10 @@ worker = "default"
 
 1. **合理设置线程限制**：根据系统资源和任务复杂度调整 `max_threads`
 2. **控制嵌套深度**：默认深度为1，避免过度嵌套导致资源耗尽
-3. **使用合适的角色**：探索任务使用 `explorer` 角色，节省成本
-4. **处理超时**：`wait()` 工具支持超时，避免无限等待
+3. **选择合适的角色**：
+   - 探索任务 → `explorer`（快速、权威）
+   - 实现任务 → `worker`（专注执行）
+   - 测试/监控 → `monitor`（低消耗、长超时）
+4. **处理超时**：`wait()` 工具支持超时，等待 `monitor` 时使用最大超时
 5. **清理资源**：任务完成后使用 `close_agent()` 释放资源
+6. **并行执行**：多个独立的探索或实现任务可以并行 spawn 多个 agent
